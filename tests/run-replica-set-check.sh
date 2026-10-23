@@ -34,3 +34,14 @@ echo "ok: migration identity limited to the clinical database"
 
 mongosh --quiet --norc "$replica" /checks/transaction-check.js
 echo "ok: multi-document transactions commit and abort"
+
+if mongosh --quiet --norc "$replica" /scripts/runtime-identity.js >/dev/null 2>&1; then
+  echo "Runtime identity created before its roles exist" >&2
+  exit 1
+fi
+echo "ok: runtime identity waits for the dlc-clinical-db roles"
+
+mongosh --quiet --norc "$replica" /checks/runtime-fixture.js
+mongosh --quiet --norc "$replica" /scripts/runtime-identity.js
+mongosh --quiet --norc "$replica" /checks/runtime-check.js
+echo "ok: runtime identity reads and writes Clinical data without DDL"
