@@ -1,5 +1,9 @@
 // Synthetic multi-document transaction across two collections: a commit
-// keeps both writes, an abort keeps neither. Uses its own throwaway database.
+// keeps both writes, an abort keeps neither. Uses its own throwaway database,
+// as the engine administrator.
+load("/scripts/identities.js");
+authenticateRoot();
+
 const name = "infra_transaction_check";
 db.getSiblingDB(name).dropDatabase();
 
