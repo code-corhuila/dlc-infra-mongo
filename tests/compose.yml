@@ -1,0 +1,21 @@
+# Disposable replica-set check: no volume, no platform network, synthetic data only.
+name: dlc-infra-mongo-replica-set-test
+
+services:
+  mongo:
+    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+
+  replica-set-check:
+    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+    depends_on:
+      mongo:
+        condition: service_started
+    environment:
+      DLC_MONGO_HOST: mongo:27017
+      DLC_MONGO_REPLICA_SET: rs0
+    volumes:
+      - ../scripts/init-replica-set.js:/checks/init-replica-set.js:ro
+      - ./transaction-check.js:/checks/transaction-check.js:ro
+      - ./run-replica-set-check.sh:/checks/run-replica-set-check.sh:ro
+    entrypoint: ["/bin/sh", "/checks/run-replica-set-check.sh"]
