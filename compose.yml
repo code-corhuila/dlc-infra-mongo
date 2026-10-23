@@ -48,9 +48,11 @@ services:
       DLC_MONGO_ROOT_USER: ${DLC_MONGO_ROOT_USER:-root}
       DLC_MONGO_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
       DLC_CLINICAL_MIGRATOR_PASSWORD_FILE: /run/secrets/clinical_migrator_password
+      DLC_CLINICAL_BACKUP_PASSWORD_FILE: /run/secrets/clinical_backup_password
     secrets:
       - mongo_root_password
       - clinical_migrator_password
+      - clinical_backup_password
     volumes:
       - ./scripts:/scripts:ro
     entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?directConnection=true", "/scripts/init.js"]
@@ -77,6 +79,43 @@ services:
     networks:
       - clinical-data
 
+  # One gzip archive of the clinical database per run, as the read-only clinical_backup identity:
+  #   docker compose --profile backup run --rm dlc-mongo-backup
+  dlc-mongo-backup:
+    image: *mongo-image
+    profiles: [backup]
+    environment:
+      DLC_MONGO_URI: mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}
+      DLC_BACKUP_PASSWORD_FILE: /run/secrets/clinical_backup_password
+      DLC_BACKUP_DIR: /backups
+    secrets:
+      - clinical_backup_password
+    volumes:
+      - ./scripts:/scripts:ro
+      - ${DLC_MONGO_BACKUP_DIR:-./backups}:/backups
+    entrypoint: ["/bin/sh", "/scripts/backup.sh"]
+    networks:
+      - clinical-data
+
+  # Operator recovery in a controlled stage; replaces the clinical database only:
+  #   DLC_RESTORE_ARCHIVE=/backups/<file> docker compose --profile restore run --rm dlc-mongo-restore
+  dlc-mongo-restore:
+    image: *mongo-image
+    profiles: [restore]
+    environment:
+      DLC_MONGO_URI: mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}
+      DLC_MONGO_ROOT_USER: ${DLC_MONGO_ROOT_USER:-root}
+      DLC_MONGO_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+      DLC_RESTORE_ARCHIVE: ${DLC_RESTORE_ARCHIVE:-}
+    secrets:
+      - mongo_root_password
+    volumes:
+      - ./scripts:/scripts:ro
+      - ${DLC_MONGO_BACKUP_DIR:-./backups}:/backups:ro
+    entrypoint: ["/bin/sh", "/scripts/restore.sh"]
+    networks:
+      - clinical-data
+
 secrets:
   mongo_root_password:
     file: ${DLC_MONGO_ROOT_PASSWORD_FILE:-./secrets/mongo-root-password.txt}
@@ -86,6 +125,8 @@ secrets:
     file: ${DLC_CLINICAL_MIGRATOR_PASSWORD_FILE:-./secrets/clinical-migrator-password.txt}
   clinical_runtime_password:
     file: ${DLC_CLINICAL_RUNTIME_PASSWORD_FILE:-./secrets/clinical-runtime-password.txt}
+  clinical_backup_password:
+    file: ${DLC_CLINICAL_BACKUP_PASSWORD_FILE:-./secrets/clinical-backup-password.txt}
 
 volumes:
   mongo_data:
