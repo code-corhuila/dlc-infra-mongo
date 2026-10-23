@@ -27,7 +27,7 @@ services:
     expose:
       - "27017"
     networks:
-      - platform
+      - clinical-data
     # Ready only while this member is a writable primary (hello needs no authentication).
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "quit(db.hello().isWritablePrimary ? 0 : 1)"]
@@ -57,7 +57,25 @@ services:
     # mongosh exits when mongod is not accepting connections yet; retry a bounded number of times.
     restart: on-failure:10
     networks:
-      - platform
+      - clinical-data
+
+  # Run once after the dlc-clinical-db migrations, and again to rotate the password:
+  #   docker compose --profile identities run --rm dlc-mongo-runtime-identity
+  dlc-mongo-runtime-identity:
+    image: *mongo-image
+    profiles: [identities]
+    environment:
+      DLC_MONGO_ROOT_USER: ${DLC_MONGO_ROOT_USER:-root}
+      DLC_MONGO_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+      DLC_CLINICAL_RUNTIME_PASSWORD_FILE: /run/secrets/clinical_runtime_password
+    secrets:
+      - mongo_root_password
+      - clinical_runtime_password
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}", "/scripts/runtime-identity.js"]
+    networks:
+      - clinical-data
 
 secrets:
   mongo_root_password:
@@ -66,12 +84,16 @@ secrets:
     file: ${DLC_MONGO_KEYFILE:-./secrets/mongo-keyfile}
   clinical_migrator_password:
     file: ${DLC_CLINICAL_MIGRATOR_PASSWORD_FILE:-./secrets/clinical-migrator-password.txt}
+  clinical_runtime_password:
+    file: ${DLC_CLINICAL_RUNTIME_PASSWORD_FILE:-./secrets/clinical-runtime-password.txt}
 
 volumes:
   mongo_data:
   mongo_config:
 
+# The allow-list is network membership: only the Clinical processes and the dlc-clinical-db migrator
+# join this network; services of other contexts stay on the platform network and cannot reach MongoDB.
 networks:
-  platform:
+  clinical-data:
     external: true
-    name: ${PLATFORM_NETWORK_NAME:-platform}
+    name: ${CLINICAL_DATA_NETWORK_NAME:-clinical-data}

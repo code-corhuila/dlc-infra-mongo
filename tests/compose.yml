@@ -12,7 +12,7 @@ services:
       - sh
       - -c
       - >-
-        openssl rand -hex 24 > /secrets/root && openssl rand -hex 24 > /secrets/migrator &&
+        openssl rand -hex 24 > /secrets/root && openssl rand -hex 24 > /secrets/migrator && openssl rand -hex 24 > /secrets/runtime &&
         openssl rand -base64 756 > /secrets/keyfile && chown -R mongodb:mongodb /secrets && chmod 400 /secrets/*
 
   mongo:
@@ -26,6 +26,7 @@ services:
     volumes:
       - test-secrets:/secrets:ro
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/secrets/keyfile"]
+    networks: [clinical-data]
 
   replica-set-check:
     image: *mongo-image
@@ -38,11 +39,26 @@ services:
       DLC_MONGO_ROOT_USER: root
       DLC_MONGO_ROOT_PASSWORD_FILE: /secrets/root
       DLC_CLINICAL_MIGRATOR_PASSWORD_FILE: /secrets/migrator
+      DLC_CLINICAL_RUNTIME_PASSWORD_FILE: /secrets/runtime
     volumes:
       - test-secrets:/secrets:ro
       - ../scripts:/scripts:ro
       - ./:/checks:ro
     entrypoint: ["/bin/sh", "/checks/run-replica-set-check.sh"]
+    networks: [clinical-data]
+
+  # A client of another context: same image, platform network only.
+  outsider-check:
+    image: *mongo-image
+    depends_on:
+      mongo:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c", "if mongosh --quiet --norc 'mongodb://mongo:27017/?directConnection=true&serverSelectionTimeoutMS=3000' --eval 'db.hello()' >/dev/null 2>&1; then echo 'outsider reached MongoDB' >&2; exit 1; fi; echo 'ok: a client outside the Clinical network cannot connect'"]
+    networks: [platform]
 
 volumes:
   test-secrets:
+
+networks:
+  clinical-data:
+  platform:
