@@ -31,6 +31,7 @@ services:
     secrets:
       - mongo_root_password
       - clinical_migrator_password
+      - clinical_backup_password
       - mongo_tls_ca
     entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?directConnection=true&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca", "/scripts/init.js"]
 
@@ -40,6 +41,20 @@ services:
       - clinical_runtime_password
       - mongo_tls_ca
     entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca", "/scripts/runtime-identity.js"]
+
+  dlc-mongo-backup:
+    environment:
+      DLC_MONGO_URI: mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca
+    secrets:
+      - clinical_backup_password
+      - mongo_tls_ca
+
+  dlc-mongo-restore:
+    environment:
+      DLC_MONGO_URI: mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca
+    secrets:
+      - mongo_root_password
+      - mongo_tls_ca
 
 secrets:
   mongo_tls_certificate:

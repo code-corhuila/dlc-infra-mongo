@@ -34,3 +34,8 @@ ensureUser("clinical", "clinical_migrator", "DLC_CLINICAL_MIGRATOR_PASSWORD_FILE
   { role: "readWrite", db: "clinical" },
   { role: "userAdmin", db: "clinical" },
 ]);
+
+// Backups read the clinical database and nothing else (dlc-infra-mongo#3).
+if (process.env.DLC_CLINICAL_BACKUP_PASSWORD_FILE) {
+  ensureUser("clinical", "clinical_backup", "DLC_CLINICAL_BACKUP_PASSWORD_FILE", [{ role: "read", db: "clinical" }]);
+}
