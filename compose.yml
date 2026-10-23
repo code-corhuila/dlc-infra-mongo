@@ -1,0 +1,48 @@
+# Clinical MongoDB engine (ADR-002, ADR-009). Collections, validators, indexes and migrations belong to dlc-clinical-db.
+services:
+  dlc-mongo:
+    # MongoDB 8.0.32 Community, pinned by digest (the same image dlc-clinical-db verifies against).
+    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+    restart: unless-stopped
+    # A replica set is required: Clinical commits state and outbox in multi-document transactions.
+    command: ["mongod", "--replSet", "${DLC_MONGO_REPLICA_SET:-rs0}", "--bind_ip_all"]
+    volumes:
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+    expose:
+      - "27017"
+    networks:
+      - platform
+    # Ready only while this member is a writable primary.
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "quit(db.hello().isWritablePrimary ? 0 : 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # One-shot, idempotent replica-set initialization; a re-run leaves an initialized set unchanged.
+  dlc-mongo-init:
+    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+    depends_on:
+      dlc-mongo:
+        condition: service_started
+    environment:
+      DLC_MONGO_HOST: dlc-mongo:27017
+      DLC_MONGO_REPLICA_SET: ${DLC_MONGO_REPLICA_SET:-rs0}
+    volumes:
+      - ./scripts/init-replica-set.js:/scripts/init-replica-set.js:ro
+    entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?directConnection=true", "/scripts/init-replica-set.js"]
+    # mongosh exits when mongod is not accepting connections yet; retry a bounded number of times.
+    restart: on-failure:10
+    networks:
+      - platform
+
+volumes:
+  mongo_data:
+  mongo_config:
+
+networks:
+  platform:
+    external: true
+    name: ${PLATFORM_NETWORK_NAME:-platform}
