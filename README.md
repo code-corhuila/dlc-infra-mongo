@@ -23,11 +23,14 @@ No database credentials or real environment files belong in Git.
 | Path | Purpose |
 | --- | --- |
 | `compose.yml` | Pinned MongoDB 8.0 engine as an authenticated replica set, persistent volumes, readiness check and a one-shot initializer. |
+| `compose.tls.yml` | Override for the shared stages: TLS 1.2+ required for clients and members. |
 | `scripts/init.js` | Idempotent initialization: replica set, writable primary, and the Clinical migration identity. |
 | `scripts/runtime-identity.js` | Runtime identity of the Clinical processes, run after the `dlc-clinical-db` migrations. |
+| `scripts/backup.sh`, `scripts/restore.sh` | Archive of the `clinical` database and its operator restore. |
+| `docs/backup-and-recovery.md` | Draft runbook for `dlc-docs` (`13-operations/backup-and-recovery.md`). |
 | `scripts/identities.js` | Helpers shared by the scripts; secrets are read from mounted files and never printed. |
 | `env/.env.*.example` | Stage templates (`local`, `develop`, `qa`, `main`) with secret file paths and secret references by name; no values. |
-| `tests/` | Disposable check with generated test-only secrets: readiness, anonymous rejection, initialization, migrator scope and a transaction. |
+| `tests/` | Disposable checks with generated test-only secrets: readiness, anonymous rejection, initialization, identities, network allow-list, a transaction, and TLS. |
 
 ## Engine
 
@@ -48,12 +51,24 @@ No database credentials or real environment files belong in Git.
   until the set is initialized and whenever no primary is available. A MongoDB outage affects
   Clinical readiness only; PostgreSQL-backed services never depend on it.
 
+## Transport and storage security
+
+- **TLS.** Development, QA and Production start with `-f compose.yml -f compose.tls.yml`: `requireTLS`,
+  TLS 1.0 and 1.1 disabled, the server certificate (PEM with key, SAN `dlc-mongo`) and its CA from the
+  secret files named in the stage template. Members of the set use the same TLS settings. Clients add
+  `tls=true&tlsCAFile=<CA file>` to their connection string. Local runs `compose.yml` alone, without TLS,
+  on a developer machine with synthetic data only.
+- **Encryption at rest.** Not in place: it depends on the hosting decision P-01 and the mechanism and key
+  management decision P-04 (for example encrypted volumes or a provider option). It must be recorded
+  and verified in a shared stage, not assumed.
+
 ## Identities
 
 | Identity | Database | Roles | Used by |
 | --- | --- | --- | --- |
 | `clinical_migrator` | `clinical` | `dbAdmin`, `readWrite`, `userAdmin` on `clinical` only | `dlc-clinical-db` (Liquibase) |
-| `clinical_runtime` | `clinical` | `clinical_application`, `clinical_outbox_publisher`, `clinical_inbox_consumer` | `dlc-clinical-api`: API, outbox relay, inbox consumer, intent reconciler |
+| `clinical_backup` | `clinical` | `read` on `clinical` only | backups (`dlc-mongo-backup`) |
+| `clinical_runtime` | `clinical` | `clinical_application`, `clinical_outbox_publisher`, `clinical_inbox_consumer`, `clinical_analytics_projector` | `dlc-clinical-api`: API, outbox relay, inbox consumer, intent reconciler, analytics consumer |
 
 `scripts/init.js` creates the identity, or re-applies its password and exact roles on every run, so a
 rotated secret or a changed grant is corrected. The migrator cannot write to another database, create
@@ -84,11 +99,19 @@ mongodb://clinical_migrator:<password>@dlc-mongo:27017/clinical?replicaSet=rs0&a
 | QA | `qa` | Not deployed. Pending P-01. |
 | Production | `main` | Not deployed. Pending P-01. |
 
-Still pending: TLS and encryption at rest
-([#4](https://github.com/code-corhuila/dlc-infra-mongo/issues/4)), and backup and recovery
-([#3](https://github.com/code-corhuila/dlc-infra-mongo/issues/3)). Until they are in place, use this
+Still pending: encryption at rest ([#4](https://github.com/code-corhuila/dlc-infra-mongo/issues/4), P-04),
+and the backup frequency, retention, storage, RTO, RPO and operator
+([#3](https://github.com/code-corhuila/dlc-infra-mongo/issues/3), P-03). Until they are in place, use this
 engine only on a developer machine with synthetic data. In shared stages each `*_FILE` is materialized
 from the AWS Secrets Manager reference named in its env template; those bindings are pending.
+
+## Backup and recovery
+
+`docker compose --profile backup run --rm dlc-mongo-backup` writes one gzip archive of `clinical` to
+`DLC_MONGO_BACKUP_DIR` as the read-only `clinical_backup` identity. The recovery operator restores it with
+`DLC_RESTORE_ARCHIVE=/backups/<file> docker compose --profile restore run --rm dlc-mongo-restore`, which
+replaces the `clinical` database only. The procedure, its validation and the decisions still pending
+are in [the draft runbook](docs/backup-and-recovery.md).
 
 ## Handoff to dlc-clinical-db and dlc-clinical-api
 
@@ -100,6 +123,7 @@ from the AWS Secrets Manager reference named in its env template; those bindings
 | Migration access | `clinical_migrator`; `dlc-clinical-db` runs `deploy/compose.yml` with `deploy/compose.auth.yml`, `MONGO_HOST=dlc-mongo`, `PLATFORM_NETWORK_NAME=clinical-data` and `MONGO_MIGRATOR_PASSWORD_FILE` |
 | Runtime access | `clinical_runtime`: `MONGO_URI=mongodb://clinical_runtime:<password>@dlc-mongo:27017/?replicaSet=rs0&authSource=clinical` with `MONGO_DATABASE=clinical`, on the `clinical-data` network |
 | Secret references | `dlc/<stage>/clinical-mongo/{root-password,keyfile,migrator-password,runtime-password}` (names only; bindings pending P-01) |
+| TLS stages | Clients add `tls=true&tlsCAFile=<CA file>` (Go driver). The Liquibase runner (Java driver) does not read `tlsCAFile`: it needs the CA in a JVM truststore, pending in `dlc-clinical-db` until a TLS stage exists. |
 | Liquibase compatibility | Reported by `dlc-clinical-db`: Liquibase 4.31.1 with the `liquibase-mongodb` extension; change types `createCollection`, `runCommand`, `createIndex`, `dropIndex`; history and lock in `databasechangelog_clinical` and `databasechangeloglock_clinical`; empty-store and upgrade verified on 8.0.32 locally. Shared stages pending. |
 
 ## Run locally
@@ -109,7 +133,7 @@ ignored by Git:
 
 ```sh
 mkdir -p secrets
-docker run --rm -v "$PWD/secrets:/out" mongo:8.0.32 sh -c 'for f in mongo-root-password.txt clinical-migrator-password.txt clinical-runtime-password.txt; do [ -s /out/$f ] || openssl rand -hex 24 > /out/$f; done; [ -s /out/mongo-keyfile ] || openssl rand -base64 756 > /out/mongo-keyfile'
+docker run --rm -v "$PWD/secrets:/out" mongo:8.0.32 sh -c 'for f in mongo-root-password.txt clinical-migrator-password.txt clinical-runtime-password.txt clinical-backup-password.txt; do [ -s /out/$f ] || openssl rand -hex 24 > /out/$f; done; [ -s /out/mongo-keyfile ] || openssl rand -base64 756 > /out/mongo-keyfile'
 ```
 
 Then start the engine:
@@ -133,6 +157,10 @@ The test project generates its own test-only secrets in a throwaway volume and s
 docker compose -f tests/compose.yml run --rm replica-set-check
 docker compose -f tests/compose.yml run --rm outsider-check
 docker compose -f tests/compose.yml down -v
+docker compose -f tests/compose.tls.yml run --rm tls-check
+docker compose -f tests/compose.tls.yml down -v
+docker compose -f tests/compose.backup.yml run --rm backup-check
+docker compose -f tests/compose.backup.yml down -v
 ```
 
 ## Branching
