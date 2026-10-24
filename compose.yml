@@ -1,19 +1,34 @@
 # Clinical MongoDB engine (ADR-002, ADR-009). Collections, validators, indexes and migrations belong to dlc-clinical-db.
+x-mongo-image: &mongo-image mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+
 services:
   dlc-mongo:
     # MongoDB 8.0.32 Community, pinned by digest (the same image dlc-clinical-db verifies against).
-    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+    image: *mongo-image
     restart: unless-stopped
+    # Authentication is always on: the root account exists only to initialize the engine, and the
+    # replica-set members authenticate each other with the keyfile (copied with the mode mongod requires).
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${DLC_MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+    secrets:
+      - mongo_root_password
+      - mongo_keyfile
+    entrypoint:
+      - bash
+      - -c
+      - install -m 400 -o mongodb -g mongodb /run/secrets/mongo_keyfile /data/configdb/keyfile && exec docker-entrypoint.sh "$$@"
+      - --
     # A replica set is required: Clinical commits state and outbox in multi-document transactions.
-    command: ["mongod", "--replSet", "${DLC_MONGO_REPLICA_SET:-rs0}", "--bind_ip_all"]
+    command: ["mongod", "--replSet", "${DLC_MONGO_REPLICA_SET:-rs0}", "--bind_ip_all", "--keyFile", "/data/configdb/keyfile"]
     volumes:
       - mongo_data:/data/db
       - mongo_config:/data/configdb
     expose:
       - "27017"
     networks:
-      - platform
-    # Ready only while this member is a writable primary.
+      - clinical-data
+    # Ready only while this member is a writable primary (hello needs no authentication).
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "quit(db.hello().isWritablePrimary ? 0 : 1)"]
       interval: 10s
@@ -21,28 +36,64 @@ services:
       retries: 5
       start_period: 30s
 
-  # One-shot, idempotent replica-set initialization; a re-run leaves an initialized set unchanged.
+  # One-shot, idempotent initialization: replica set and the Clinical migration identity.
   dlc-mongo-init:
-    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+    image: *mongo-image
     depends_on:
       dlc-mongo:
         condition: service_started
     environment:
       DLC_MONGO_HOST: dlc-mongo:27017
       DLC_MONGO_REPLICA_SET: ${DLC_MONGO_REPLICA_SET:-rs0}
+      DLC_MONGO_ROOT_USER: ${DLC_MONGO_ROOT_USER:-root}
+      DLC_MONGO_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+      DLC_CLINICAL_MIGRATOR_PASSWORD_FILE: /run/secrets/clinical_migrator_password
+    secrets:
+      - mongo_root_password
+      - clinical_migrator_password
     volumes:
-      - ./scripts/init-replica-set.js:/scripts/init-replica-set.js:ro
-    entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?directConnection=true", "/scripts/init-replica-set.js"]
+      - ./scripts:/scripts:ro
+    entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?directConnection=true", "/scripts/init.js"]
     # mongosh exits when mongod is not accepting connections yet; retry a bounded number of times.
     restart: on-failure:10
     networks:
-      - platform
+      - clinical-data
+
+  # Run once after the dlc-clinical-db migrations, and again to rotate the password:
+  #   docker compose --profile identities run --rm dlc-mongo-runtime-identity
+  dlc-mongo-runtime-identity:
+    image: *mongo-image
+    profiles: [identities]
+    environment:
+      DLC_MONGO_ROOT_USER: ${DLC_MONGO_ROOT_USER:-root}
+      DLC_MONGO_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+      DLC_CLINICAL_RUNTIME_PASSWORD_FILE: /run/secrets/clinical_runtime_password
+    secrets:
+      - mongo_root_password
+      - clinical_runtime_password
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}", "/scripts/runtime-identity.js"]
+    networks:
+      - clinical-data
+
+secrets:
+  mongo_root_password:
+    file: ${DLC_MONGO_ROOT_PASSWORD_FILE:-./secrets/mongo-root-password.txt}
+  mongo_keyfile:
+    file: ${DLC_MONGO_KEYFILE:-./secrets/mongo-keyfile}
+  clinical_migrator_password:
+    file: ${DLC_CLINICAL_MIGRATOR_PASSWORD_FILE:-./secrets/clinical-migrator-password.txt}
+  clinical_runtime_password:
+    file: ${DLC_CLINICAL_RUNTIME_PASSWORD_FILE:-./secrets/clinical-runtime-password.txt}
 
 volumes:
   mongo_data:
   mongo_config:
 
+# The allow-list is network membership: only the Clinical processes and the dlc-clinical-db migrator
+# join this network; services of other contexts stay on the platform network and cannot reach MongoDB.
 networks:
-  platform:
+  clinical-data:
     external: true
-    name: ${PLATFORM_NETWORK_NAME:-platform}
+    name: ${CLINICAL_DATA_NETWORK_NAME:-clinical-data}

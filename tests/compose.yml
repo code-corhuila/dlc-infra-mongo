@@ -1,21 +1,64 @@
-# Disposable replica-set check: no volume, no platform network, synthetic data only.
+# Disposable check with authentication: test-only secrets generated per run in a
+# throwaway volume, no platform network, synthetic data only.
 name: dlc-infra-mongo-replica-set-test
+x-mongo-image: &mongo-image mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
 
 services:
+  test-secrets:
+    image: *mongo-image
+    volumes:
+      - test-secrets:/secrets
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        openssl rand -hex 24 > /secrets/root && openssl rand -hex 24 > /secrets/migrator && openssl rand -hex 24 > /secrets/runtime &&
+        openssl rand -base64 756 > /secrets/keyfile && chown -R mongodb:mongodb /secrets && chmod 400 /secrets/*
+
   mongo:
-    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    image: *mongo-image
+    depends_on:
+      test-secrets:
+        condition: service_completed_successfully
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /secrets/root
+    volumes:
+      - test-secrets:/secrets:ro
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/secrets/keyfile"]
+    networks: [clinical-data]
 
   replica-set-check:
-    image: mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+    image: *mongo-image
     depends_on:
       mongo:
         condition: service_started
     environment:
       DLC_MONGO_HOST: mongo:27017
       DLC_MONGO_REPLICA_SET: rs0
+      DLC_MONGO_ROOT_USER: root
+      DLC_MONGO_ROOT_PASSWORD_FILE: /secrets/root
+      DLC_CLINICAL_MIGRATOR_PASSWORD_FILE: /secrets/migrator
+      DLC_CLINICAL_RUNTIME_PASSWORD_FILE: /secrets/runtime
     volumes:
-      - ../scripts/init-replica-set.js:/checks/init-replica-set.js:ro
-      - ./transaction-check.js:/checks/transaction-check.js:ro
-      - ./run-replica-set-check.sh:/checks/run-replica-set-check.sh:ro
+      - test-secrets:/secrets:ro
+      - ../scripts:/scripts:ro
+      - ./:/checks:ro
     entrypoint: ["/bin/sh", "/checks/run-replica-set-check.sh"]
+    networks: [clinical-data]
+
+  # A client of another context: same image, platform network only.
+  outsider-check:
+    image: *mongo-image
+    depends_on:
+      mongo:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c", "if mongosh --quiet --norc 'mongodb://mongo:27017/?directConnection=true&serverSelectionTimeoutMS=3000' --eval 'db.hello()' >/dev/null 2>&1; then echo 'outsider reached MongoDB' >&2; exit 1; fi; echo 'ok: a client outside the Clinical network cannot connect'"]
+    networks: [platform]
+
+volumes:
+  test-secrets:
+
+networks:
+  clinical-data:
+  platform:
