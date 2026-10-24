@@ -68,7 +68,7 @@ No database credentials or real environment files belong in Git.
 | --- | --- | --- | --- |
 | `clinical_migrator` | `clinical` | `dbAdmin`, `readWrite`, `userAdmin` on `clinical` only | `dlc-clinical-db` (Liquibase) |
 | `clinical_backup` | `clinical` | `read` on `clinical` only | backups (`dlc-mongo-backup`) |
-| `clinical_runtime` | `clinical` | `clinical_application`, `clinical_outbox_publisher`, `clinical_inbox_consumer` | `dlc-clinical-api`: API, outbox relay, inbox consumer, intent reconciler |
+| `clinical_runtime` | `clinical` | `clinical_application`, `clinical_outbox_publisher`, `clinical_inbox_consumer`, `clinical_analytics_projector` | `dlc-clinical-api`: API, outbox relay, inbox consumer, intent reconciler, analytics consumer |
 
 `scripts/init.js` creates the identity, or re-applies its password and exact roles on every run, so a
 rotated secret or a changed grant is corrected. The migrator cannot write to another database, create
