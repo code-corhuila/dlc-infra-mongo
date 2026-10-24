@@ -9,3 +9,4 @@ const crud = (actions) => [{ resource: { db: "clinical", collection: "runtime_ch
 clinical.createRole({ role: "clinical_application", privileges: crud(["find", "insert", "update"]), roles: [] });
 clinical.createRole({ role: "clinical_outbox_publisher", privileges: crud(["find", "update"]), roles: [] });
 clinical.createRole({ role: "clinical_inbox_consumer", privileges: crud(["find", "insert", "update"]), roles: [] });
+clinical.createRole({ role: "clinical_analytics_projector", privileges: crud(["find", "insert", "update"]), roles: [] });

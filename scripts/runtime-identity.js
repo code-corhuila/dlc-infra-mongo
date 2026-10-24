@@ -1,9 +1,9 @@
 // Ensures the runtime identity of the Clinical processes (API, outbox relay,
-// inbox consumer, intent reconciler). Its roles are created by dlc-clinical-db,
+// inbox consumer, intent reconciler, analytics consumer). Its roles are created by dlc-clinical-db,
 // so run this after the migrations; it fails if any role is missing.
 load("/scripts/identities.js");
 
-const runtimeRoles = ["clinical_application", "clinical_outbox_publisher", "clinical_inbox_consumer"];
+const runtimeRoles = ["clinical_application", "clinical_outbox_publisher", "clinical_inbox_consumer", "clinical_analytics_projector"];
 
 authenticateRoot();
 const clinical = db.getSiblingDB("clinical");
