@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, qa, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mongo-infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate engine Compose for every environment
+        run: |
+          for environment in local develop qa main; do
+            docker compose --env-file "env/.env.$environment.example" -f compose.yml config --quiet
+          done
+      - name: Verify replica set, readiness and transactions
+        run: docker compose -f tests/compose.yml run --rm replica-set-check
+      - name: Verify the network allow-list
+        run: docker compose -f tests/compose.yml run --rm outsider-check
+      - name: Clean up the replica set check
+        if: always()
+        run: docker compose -f tests/compose.yml down -v
+      - name: Verify TLS is required
+        run: docker compose -f tests/compose.tls.yml run --rm tls-check
+      - name: Clean up the TLS check
+        if: always()
+        run: docker compose -f tests/compose.tls.yml down -v
+      - name: Verify backup and restore
+        run: docker compose -f tests/compose.backup.yml run --rm backup-check
+      - name: Clean up the backup check
+        if: always()
+        run: docker compose -f tests/compose.backup.yml down -v
