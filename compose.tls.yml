@@ -1,0 +1,63 @@
+# TLS for the shared stages (develop, qa, main): use together with compose.yml. Clients and replica-set members
+# must use TLS 1.2 or higher; plain connections are refused. The certificate (PEM with key, SAN dlc-mongo) and the CA
+# come from secret files and are never committed. Local may keep compose.yml alone, without TLS.
+services:
+  dlc-mongo:
+    secrets:
+      - mongo_root_password
+      - mongo_keyfile
+      - mongo_tls_certificate
+      - mongo_tls_ca
+    command:
+      - mongod
+      - --replSet
+      - ${DLC_MONGO_REPLICA_SET:-rs0}
+      - --bind_ip_all
+      - --keyFile
+      - /data/configdb/keyfile
+      - --tlsMode
+      - requireTLS
+      - --tlsCertificateKeyFile
+      - /run/secrets/mongo_tls_certificate
+      - --tlsCAFile
+      - /run/secrets/mongo_tls_ca
+      - --tlsDisabledProtocols
+      - TLS1_0,TLS1_1
+      - --tlsAllowConnectionsWithoutCertificates
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--tls", "--tlsCAFile", "/run/secrets/mongo_tls_ca", "--host", "dlc-mongo", "--eval", "quit(db.hello().isWritablePrimary ? 0 : 1)"]
+
+  dlc-mongo-init:
+    secrets:
+      - mongo_root_password
+      - clinical_migrator_password
+      - clinical_backup_password
+      - mongo_tls_ca
+    entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?directConnection=true&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca", "/scripts/init.js"]
+
+  dlc-mongo-runtime-identity:
+    secrets:
+      - mongo_root_password
+      - clinical_runtime_password
+      - mongo_tls_ca
+    entrypoint: ["mongosh", "--quiet", "--norc", "mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca", "/scripts/runtime-identity.js"]
+
+  dlc-mongo-backup:
+    environment:
+      DLC_MONGO_URI: mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca
+    secrets:
+      - clinical_backup_password
+      - mongo_tls_ca
+
+  dlc-mongo-restore:
+    environment:
+      DLC_MONGO_URI: mongodb://dlc-mongo:27017/?replicaSet=${DLC_MONGO_REPLICA_SET:-rs0}&tls=true&tlsCAFile=/run/secrets/mongo_tls_ca
+    secrets:
+      - mongo_root_password
+      - mongo_tls_ca
+
+secrets:
+  mongo_tls_certificate:
+    file: ${DLC_MONGO_TLS_CERTIFICATE_FILE:?DLC_MONGO_TLS_CERTIFICATE_FILE is required for TLS}
+  mongo_tls_ca:
+    file: ${DLC_MONGO_TLS_CA_FILE:?DLC_MONGO_TLS_CA_FILE is required for TLS}

@@ -1,0 +1,47 @@
+# Disposable TLS check: a throwaway CA and server certificate per run, test-only secrets, synthetic data only.
+name: dlc-infra-mongo-tls-test
+x-mongo-image: &mongo-image mongo:8.0.32@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+
+services:
+  test-secrets:
+    image: *mongo-image
+    entrypoint: ["/bin/sh", "/checks/make-test-certificates.sh"]
+    environment:
+      TLS_HOST: mongo
+    volumes:
+      - test-secrets:/secrets
+      - ./:/checks:ro
+
+  mongo:
+    image: *mongo-image
+    depends_on:
+      test-secrets:
+        condition: service_completed_successfully
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /secrets/root
+    volumes:
+      - test-secrets:/secrets:ro
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/secrets/keyfile",
+      "--tlsMode", "requireTLS", "--tlsCertificateKeyFile", "/secrets/server.pem", "--tlsCAFile", "/secrets/ca.pem",
+      "--tlsDisabledProtocols", "TLS1_0,TLS1_1", "--tlsAllowConnectionsWithoutCertificates"]
+
+  tls-check:
+    image: *mongo-image
+    depends_on:
+      mongo:
+        condition: service_started
+    environment:
+      DLC_MONGO_HOST: mongo:27017
+      DLC_MONGO_REPLICA_SET: rs0
+      DLC_MONGO_ROOT_USER: root
+      DLC_MONGO_ROOT_PASSWORD_FILE: /secrets/root
+      DLC_CLINICAL_MIGRATOR_PASSWORD_FILE: /secrets/migrator
+    volumes:
+      - test-secrets:/secrets:ro
+      - ../scripts:/scripts:ro
+      - ./:/checks:ro
+    entrypoint: ["/bin/sh", "/checks/run-tls-check.sh"]
+
+volumes:
+  test-secrets:
